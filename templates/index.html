@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SSH Web Proxy</title>
+  <style>
+    body { font-family: -apple-system, system-ui, "Segoe UI", sans-serif;
+           max-width: 720px; margin: 2em auto; padding: 0 1em; color: #222; }
+    h1 { font-size: 1.4em; border-bottom: 1px solid #ddd; padding-bottom: .3em; }
+    fieldset { border: 1px solid #ccc; border-radius: 4px; padding: 1em 1.5em;
+               margin-bottom: 1em; }
+    legend { font-weight: bold; padding: 0 .4em; }
+    label { display: block; margin: .6em 0 .2em 0; font-size: .9em; color: #444; }
+    input[type=text], input[type=number], select {
+      width: 100%; box-sizing: border-box; padding: .4em .6em;
+      border: 1px solid #bbb; border-radius: 3px; font-family: inherit;
+      font-size: 1em;
+    }
+    .row { display: flex; gap: 1em; }
+    .row > * { flex: 1; }
+    button { padding: .5em 1.2em; font-size: 1em; cursor: pointer;
+             background: #2c7be5; color: white; border: none;
+             border-radius: 3px; }
+    button:hover { background: #1a5fc4; }
+    .muted { color: #888; font-size: .85em; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: .35em .6em; text-align: left; border-bottom: 1px solid #eee;
+             font-size: .9em; }
+    th { background: #f7f7f7; }
+    .err { background: #fee; border: 1px solid #fbb; color: #800;
+           padding: .6em 1em; border-radius: 3px; margin-bottom: 1em; }
+    code { background: #f3f3f3; padding: 0 .3em; border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <h1>SSH Web Proxy</h1>
+  <p class="muted">
+    Opens a web UI on a device behind a reverse-tunneled SSH connection.
+    The tunnel server (this host) must already have passwordless SSH key
+    auth set up to the remote machine via the local mapped port below.
+  </p>
+
+  %%ERROR_HTML%%
+
+  <fieldset>
+    <legend>Open new session</legend>
+    <form method="POST" action="/connect" id="main-form">
+      <div class="row" style="margin-bottom: .8em">
+        <label style="display:inline-block; flex:none; margin-right:1em">
+          <input type="radio" name="mode" value="proxy"%%PROXY_CHECKED%%
+                 onchange="onModeChange()"> Proxy web UI
+        </label>
+        <label style="display:inline-block; flex:none">
+          <input type="radio" name="mode" value="diagnose"%%DIAGNOSE_CHECKED%%
+                 onchange="onModeChange()"> Diagnostics
+          <span class="muted">(ping + TCP 9100 + SNMP)</span>
+        </label>
+      </div>
+      %%SERVERS_PICKER%%
+      <div class="row">
+        <div>
+          <label>SSH username</label>
+          <input type="text" name="ssh_user" id="ssh-user-input" required autofocus
+                 placeholder="e.g. admin"
+                 value="%%PREFILL_USER%%">
+        </div>
+        <div>
+          <label>Local SSH tunneled port</label>
+          <input type="number" name="ssh_local_port" id="ssh-port-input" min="1" max="65535"
+                 required placeholder="e.g. 8201"
+                 value="%%PREFILL_SSHPORT%%">
+        </div>
+      </div>
+      <div class="row">
+        <div style="flex: 3">
+          <label>Remote target IP (inside the remote LAN)</label>
+          <input type="text" name="remote_host" required
+                 placeholder="e.g. 192.168.1.50"
+                 value="%%PREFILL_HOST%%">
+        </div>
+        <div class="mode-proxy">
+          <label>Remote port</label>
+          <input type="number" name="remote_port" min="1" max="65535"
+                 placeholder="80" value="%%PREFILL_PORT%%">
+        </div>
+        <div class="mode-proxy">
+          <label>Scheme</label>
+          <select name="scheme" onchange="onSchemeChange()">
+            <option value="http"%%HTTP_SEL%%>http</option>
+            <option value="https"%%HTTPS_SEL%%>https</option>
+          </select>
+        </div>
+        <div class="mode-diagnose" style="display:none">
+          <label>SNMP community</label>
+          <input type="text" name="snmp_community"
+                 placeholder="public" value="%%PREFILL_COMMUNITY%%">
+        </div>
+      </div>
+      <p style="margin-top: 1em">
+        <button type="submit"><span id="submit-label">Open session →</span></button>
+      </p>
+    </form>
+  </fieldset>
+  <script>
+  function onModeChange() {
+    const m = document.querySelector('input[name="mode"]:checked').value;
+    const form = document.getElementById('main-form');
+    const proxyFields = document.querySelectorAll('.mode-proxy');
+    const diagFields = document.querySelectorAll('.mode-diagnose');
+    const label = document.getElementById('submit-label');
+    if (m === 'proxy') {
+      form.action = '/connect';
+      // Open the proxied UI in a new tab — keeps the original tab on
+      // the form so the operator can immediately spin up another
+      // session against a different target without backing out.
+      form.target = '_blank';
+      proxyFields.forEach(e => e.style.display = '');
+      diagFields.forEach(e => e.style.display = 'none');
+      label.textContent = 'Open session →';
+      form.querySelector('[name=remote_port]').required = true;
+    } else {
+      form.action = '/diagnose';
+      // Open results in a new tab too — keeps the form available for
+      // the next target, and lets the operator compare two devices
+      // side by side.
+      form.target = '_blank';
+      proxyFields.forEach(e => e.style.display = 'none');
+      diagFields.forEach(e => e.style.display = '');
+      label.textContent = 'Run diagnostics →';
+      form.querySelector('[name=remote_port]').required = false;
+    }
+  }
+  // Fills SSH user + local port from the quick-pick dropdown.
+  // Triggered on the picker's change event; "(Manual entry)" leaves
+  // the inputs untouched.
+  function onServerPick() {
+    const sel = document.getElementById('server-picker');
+    if (!sel) return;
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt) return;
+    const user = opt.dataset.user;
+    const port = opt.dataset.port;
+    if (user && port) {
+      document.getElementById('ssh-user-input').value = user;
+      document.getElementById('ssh-port-input').value = port;
+    }
+  }
+  // Auto-swap the port when the operator toggles the scheme — only if
+  // the current port is empty or sits at the OTHER scheme's default,
+  // so a hand-typed custom port is left alone.
+  function onSchemeChange() {
+    const form = document.getElementById('main-form');
+    const scheme = form.querySelector('[name=scheme]').value;
+    const portInput = form.querySelector('[name=remote_port]');
+    const cur = portInput.value.trim();
+    if (scheme === 'https' && (cur === '' || cur === '80')) {
+      portInput.value = '443';
+    } else if (scheme === 'http' && (cur === '' || cur === '443')) {
+      portInput.value = '80';
+    }
+  }
+  onModeChange();
+  </script>
+
+  <fieldset>
+    <legend>Active sessions (%%N_ACTIVE%%)</legend>
+    %%SESSIONS_TABLE%%
+  </fieldset>
+
+  <p class="muted">
+    Listener bound to <code>%%BIND%%:%%PORT%%</code>.
+    Idle sessions are reaped after %%IDLE_MIN%% minutes.
+  </p>
+</body>
+</html>
